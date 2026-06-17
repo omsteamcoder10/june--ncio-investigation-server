@@ -11,7 +11,7 @@ fastify.register(cors, {
 // Routes
 fastify.register(require('./routes/members'), { prefix: '/api/members' });
 fastify.register(require('./routes/auth'), { prefix: '/api/auth' });
-
+fastify.register(require('./routes/donations'), { prefix: '/api/donations' });
 // Health check
 fastify.get('/', async () => ({ status: 'NCIO Server Running 🚀' }));
 

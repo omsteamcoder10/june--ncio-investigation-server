@@ -2,6 +2,91 @@ const pool = require('../plugins/db');
 
 require('dotenv').config();
 const nodemailer = require('nodemailer');
+const puppeteer = require('puppeteer');
+
+const generateIDCardPDF = async (member, idCardNumber) => {
+  const isState = member.membership_type?.toUpperCase() === 'STATE';
+  const isZonal = member.membership_type?.toUpperCase() === 'ZONAL';
+  const primary = isState ? '#7f0000' : isZonal ? '#4a148c' : '#0d1b5e';
+  const secondary = isState ? '#b71c1c' : isZonal ? '#7b1fa2' : '#1a237e';
+  const label = isState ? 'STATE' : isZonal ? 'ZONAL' : 'DISTRICT';
+  const approvedDate = new Date().toLocaleDateString('en-IN');
+  const dob = member.date_of_birth
+    ? new Date(member.date_of_birth).toLocaleDateString('en-IN') : '-';
+
+  const html = `<!DOCTYPE html>
+  <html><head><meta charset="UTF-8">
+  <style>
+    * { margin:0; padding:0; box-sizing:border-box; }
+    body { width:342px; height:216px; font-family:Arial,sans-serif; overflow:hidden; }
+    .card { width:342px; height:216px; border:3px solid ${primary}; border-radius:12px; overflow:hidden; position:relative; background:#fff; }
+    .header { background:linear-gradient(135deg,${primary} 0%,${secondary} 100%); padding:10px 14px; display:flex; align-items:center; justify-content:space-between; }
+    .logo-circle { width:32px; height:32px; border-radius:50%; background:rgba(255,255,255,0.2); border:2px solid rgba(255,255,255,0.5); display:flex; align-items:center; justify-content:center; color:white; font-weight:900; font-size:13px; }
+    .logo-text { color:white; font-weight:900; font-size:13px; letter-spacing:1px; }
+    .logo-sub { color:rgba(255,255,255,0.7); font-size:8px; letter-spacing:1px; }
+    .badge { background:rgba(255,255,255,0.15); border:1px solid rgba(255,255,255,0.4); border-radius:4px; padding:3px 8px; color:white; font-size:9px; font-weight:700; letter-spacing:1.5px; }
+    .body { padding:12px 14px; display:flex; gap:12px; align-items:flex-start; }
+    .photo { width:70px; height:84px; border-radius:6px; border:3px solid ${primary}; object-fit:cover; flex-shrink:0; }
+    .photo-placeholder { width:70px; height:84px; border-radius:6px; border:3px solid ${primary}; background:${primary}22; display:flex; align-items:center; justify-content:center; flex-direction:column; gap:4px; flex-shrink:0; }
+    .initial { width:36px; height:36px; border-radius:50%; background:${primary}; display:flex; align-items:center; justify-content:center; color:white; font-weight:900; font-size:16px; }
+    .name { font-weight:900; color:#111827; font-size:13px; margin-bottom:3px; }
+    .sub { font-size:10px; color:#6b7280; margin-bottom:8px; }
+    .info-row { display:flex; gap:4px; font-size:9.5px; margin-bottom:3px; }
+    .info-label { color:#9ca3af; min-width:40px; }
+    .info-value { color:#1f2937; font-weight:600; }
+    .footer { position:absolute; bottom:0; left:0; right:0; background:linear-gradient(90deg,${primary} 0%,${secondary} 100%); padding:6px 14px; display:flex; justify-content:space-between; align-items:center; }
+    .card-no { font-family:monospace; font-size:10px; color:white; font-weight:700; letter-spacing:1px; }
+    .valid { font-size:8.5px; color:rgba(255,255,255,0.75); }
+  </style></head>
+  <body>
+  <div class="card">
+    <div class="header">
+      <div style="display:flex;align-items:center;gap:8px;">
+        <div class="logo-circle">N</div>
+        <div>
+          <div class="logo-text">NCIO</div>
+          <div class="logo-sub">OFFICIAL MEMBER</div>
+        </div>
+      </div>
+      <div class="badge">${label}</div>
+    </div>
+    <div class="body">
+      ${member.photo
+        ? `<img src="${member.photo}" class="photo" />`
+        : `<div class="photo-placeholder"><div class="initial">${member.full_name?.charAt(0).toUpperCase()}</div><div style="font-size:8px;color:${primary};font-weight:600;">MEMBER</div></div>`
+      }
+      <div style="flex:1;">
+        <div class="name">${member.full_name}</div>
+        <div class="sub">S/o ${member.father_name}</div>
+        <div class="info-row"><span class="info-label">DOB:</span><span class="info-value">${dob}</span></div>
+        <div class="info-row"><span class="info-label">District:</span><span class="info-value">${member.district || '-'}</span></div>
+        <div class="info-row"><span class="info-label">Zone:</span><span class="info-value">${member.zone}</span></div>
+        <div class="info-row"><span class="info-label">Phone:</span><span class="info-value">${member.phone}</span></div>
+      </div>
+    </div>
+    <div class="footer">
+      <div class="card-no">${idCardNumber}</div>
+      <div class="valid">Valid: ${approvedDate}</div>
+    </div>
+  </div>
+  </body></html>`;
+
+  const browser = await puppeteer.launch({
+    headless: true,
+    args: ['--no-sandbox', '--disable-setuid-sandbox'],
+  });
+  const page = await browser.newPage();
+  await page.setViewport({ width: 342, height: 216 });
+  await page.setContent(html, { waitUntil: 'networkidle0' });
+  const pdfBuffer = await page.pdf({
+    width: '85.6mm',
+    height: '54mm',
+    printBackground: true,
+    margin: { top: 0, right: 0, bottom: 0, left: 0 },
+  });
+  await browser.close();
+  return pdfBuffer;
+};
 
 const transporter = nodemailer.createTransport({
   host: 'smtp.gmail.com',
@@ -196,9 +281,10 @@ try {
         `UPDATE members SET status = 'APPROVED', id_card_number = $1, approved_at = NOW() WHERE id = $2`,
         [idCardNumber, request.params.id]
       );
-      // Send approval email to member
+// Send approval email with ID card PDF
 try {
-  console.log('Sending to:', m.email);
+  const pdfBuffer = await generateIDCardPDF(m, idCardNumber);
+  
   await transporter.sendMail({
     from: process.env.SMTP_USER,
     to: m.email,
@@ -227,22 +313,28 @@ try {
             </tr>
             <tr>
               <td style="padding:8px 12px;color:#888;font-size:13px;">District</td>
-              <td style="padding:8px 12px;font-weight:bold;">${m.district}</td>
+              <td style="padding:8px 12px;font-weight:bold;">${m.district || '-'}</td>
             </tr>
           </table>
-          <p style="color:#555;font-size:13px;">You can verify your membership at our public search page using your mobile number and date of birth.</p>
+          <p style="color:#555;font-size:13px;">Your ID card is attached to this email. Please download and keep it safe.</p>
         </div>
         <div style="background:#f8f9ff;padding:12px;text-align:center;border-top:1px solid #e5e7eb;">
           <p style="color:#888;font-size:11px;margin:0;">© 2026 NCIO. All rights reserved.</p>
         </div>
       </div>
     `,
+    attachments: [
+      {
+        filename: `NCIO_${m.application_id}_IDCard.pdf`,
+        content: pdfBuffer,
+        contentType: 'application/pdf',
+      },
+    ],
   });
-  console.log('✅ Approval email sent to member');
+  console.log('✅ Approval email with ID card sent to member');
 } catch (emailErr) {
   console.error('❌ Approval email error:', emailErr.message);
 }
-
       return { message: 'Member approved successfully', idCardNumber };
     } catch (err) {
       console.error('APPROVE ERROR:', err.message);
