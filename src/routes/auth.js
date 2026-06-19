@@ -1,24 +1,7 @@
-const pool = require('../plugins/db');
-require('dotenv').config();
+const { login } = require('../controllers/auth.controller');
 
 async function authRoutes(fastify, options) {
-  // Admin login
-  fastify.post('/login', async (request, reply) => {
-    const { username, password } = request.body;
-
-    if (
-      username === process.env.ADMIN_USERNAME || username === 'admin' &&
-      password === process.env.ADMIN_PASSWORD || password === 'ncio@admin123'
-    ) {
-      return {
-        success: true,
-        token: 'ncio-admin-token',
-        user: { username: 'admin', role: 'ADMIN' },
-      };
-    }
-
-    return reply.code(401).send({ error: 'Invalid credentials' });
-  });
+  fastify.post('/login', login);
 }
 
 module.exports = authRoutes;
