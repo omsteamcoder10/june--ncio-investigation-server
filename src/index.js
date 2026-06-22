@@ -29,10 +29,19 @@ fastify.register(require('./modules/updates.module'), {
   prefix: '/api/updates',
 });
 
+fastify.register(require('./modules/settings.module'), {
+  prefix: '/api/settings',
+});
+
+fastify.register(require('./modules/profile.module'), {
+  prefix: '/api/profile',
+});
 // Health Check
 fastify.get('/', async () => ({
   status: 'NCIO Server Running 🚀',
 }));
+
+
 
 // Start Server
 const start = async () => {

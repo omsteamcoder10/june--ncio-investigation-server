@@ -1,7 +1,26 @@
 const pool = require('../plugins/db');
 const nodemailer = require('nodemailer');
 const puppeteer = require('puppeteer');
+const fs = require('fs');
+const path = require('path');
 require('dotenv').config();
+
+let cachedLogoBase64 = null;
+let logoLoadAttempted = false;
+
+const getLogoBase64 = () => {
+  if (logoLoadAttempted) return cachedLogoBase64;
+  logoLoadAttempted = true;
+  try {
+    const logoPath = path.join(__dirname, '../../../client/public/logo/1.png');
+    const logo = fs.readFileSync(logoPath);
+    cachedLogoBase64 = `data:image/png;base64,${logo.toString('base64')}`;
+  } catch (err) {
+    console.error('Logo not found:', err.message);
+    cachedLogoBase64 = null;
+  }
+  return cachedLogoBase64;
+};
 
 const transporter = nodemailer.createTransport({
   host: 'smtp.gmail.com',
@@ -14,6 +33,7 @@ const transporter = nodemailer.createTransport({
 });
 
 const generateIDCardPDF = async (member, idCardNumber) => {
+  const logoBase64 = getLogoBase64();
   const isState = member.membership_type?.toUpperCase() === 'STATE';
   const isZonal = member.membership_type?.toUpperCase() === 'ZONAL';
   const primary = isState ? '#7f0000' : isZonal ? '#4a148c' : '#0d1b5e';
@@ -31,6 +51,7 @@ const generateIDCardPDF = async (member, idCardNumber) => {
     .card { width:342px; height:216px; border:3px solid ${primary}; border-radius:12px; overflow:hidden; position:relative; background:#fff; }
     .header { background:linear-gradient(135deg,${primary} 0%,${secondary} 100%); padding:10px 14px; display:flex; align-items:center; justify-content:space-between; }
     .logo-circle { width:32px; height:32px; border-radius:50%; background:rgba(255,255,255,0.2); border:2px solid rgba(255,255,255,0.5); display:flex; align-items:center; justify-content:center; color:white; font-weight:900; font-size:13px; }
+    .logo-img { width:32px; height:32px; border-radius:50%; object-fit:cover; border:2px solid rgba(255,255,255,0.5); }
     .logo-text { color:white; font-weight:900; font-size:13px; letter-spacing:1px; }
     .logo-sub { color:rgba(255,255,255,0.7); font-size:8px; letter-spacing:1px; }
     .badge { background:rgba(255,255,255,0.15); border:1px solid rgba(255,255,255,0.4); border-radius:4px; padding:3px 8px; color:white; font-size:9px; font-weight:700; letter-spacing:1.5px; }
@@ -51,7 +72,10 @@ const generateIDCardPDF = async (member, idCardNumber) => {
   <div class="card">
     <div class="header">
       <div style="display:flex;align-items:center;gap:8px;">
-        <div class="logo-circle">N</div>
+        ${logoBase64
+          ? `<img src="${logoBase64}" class="logo-img" />`
+          : `<div class="logo-circle">N</div>`
+        }
         <div>
           <div class="logo-text">NCIO</div>
           <div class="logo-sub">OFFICIAL MEMBER</div>
