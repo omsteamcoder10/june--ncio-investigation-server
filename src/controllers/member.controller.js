@@ -1,26 +1,9 @@
 const pool = require('../plugins/db');
 const nodemailer = require('nodemailer');
 const puppeteer = require('puppeteer');
-const fs = require('fs');
 const path = require('path');
+const fs = require('fs');
 require('dotenv').config();
-
-let cachedLogoBase64 = null;
-let logoLoadAttempted = false;
-
-const getLogoBase64 = () => {
-  if (logoLoadAttempted) return cachedLogoBase64;
-  logoLoadAttempted = true;
-  try {
-    const logoPath = path.join(__dirname, '../../../client/public/logo/1.png');
-    const logo = fs.readFileSync(logoPath);
-    cachedLogoBase64 = `data:image/png;base64,${logo.toString('base64')}`;
-  } catch (err) {
-    console.error('Logo not found:', err.message);
-    cachedLogoBase64 = null;
-  }
-  return cachedLogoBase64;
-};
 
 const transporter = nodemailer.createTransport({
   host: 'smtp.gmail.com',
@@ -32,8 +15,21 @@ const transporter = nodemailer.createTransport({
   },
 });
 
+const FROM_EMAIL = `"NCIO Official" <${process.env.SMTP_USER}>`;
+
+// ✅ Logo base64 - puppeteer render-la use agum
+const getLogoBase64 = () => {
+  try {
+    const logoPath = path.join(__dirname, '../../../client/public/logo/1.png');
+    const logoBuffer = fs.readFileSync(logoPath);
+    return `data:image/png;base64,${logoBuffer.toString('base64')}`;
+  } catch (err) {
+    console.error('Logo read error:', err.message);
+    return null;
+  }
+};
+
 const generateIDCardPDF = async (member, idCardNumber) => {
-  const logoBase64 = getLogoBase64();
   const isState = member.membership_type?.toUpperCase() === 'STATE';
   const isZonal = member.membership_type?.toUpperCase() === 'ZONAL';
   const primary = isState ? '#7f0000' : isZonal ? '#4a148c' : '#0d1b5e';
@@ -43,6 +39,12 @@ const generateIDCardPDF = async (member, idCardNumber) => {
   const dob = member.date_of_birth
     ? new Date(member.date_of_birth).toLocaleDateString('en-IN') : '-';
 
+  // ✅ Logo base64 ga convert - puppeteer correct-a render pannum
+  const logoBase64 = getLogoBase64();
+  const logoHtml = logoBase64
+    ? `<img src="${logoBase64}" style="width:32px;height:32px;object-fit:cover;border-radius:50%;" />`
+    : `<div style="color:white;font-weight:900;font-size:13px;">N</div>`;
+
   const html = `<!DOCTYPE html>
   <html><head><meta charset="UTF-8">
   <style>
@@ -50,8 +52,7 @@ const generateIDCardPDF = async (member, idCardNumber) => {
     body { width:342px; height:216px; font-family:Arial,sans-serif; overflow:hidden; }
     .card { width:342px; height:216px; border:3px solid ${primary}; border-radius:12px; overflow:hidden; position:relative; background:#fff; }
     .header { background:linear-gradient(135deg,${primary} 0%,${secondary} 100%); padding:10px 14px; display:flex; align-items:center; justify-content:space-between; }
-    .logo-circle { width:32px; height:32px; border-radius:50%; background:rgba(255,255,255,0.2); border:2px solid rgba(255,255,255,0.5); display:flex; align-items:center; justify-content:center; color:white; font-weight:900; font-size:13px; }
-    .logo-img { width:32px; height:32px; border-radius:50%; object-fit:cover; border:2px solid rgba(255,255,255,0.5); }
+    .logo-circle { width:32px; height:32px; border-radius:50%; border:2px solid rgba(255,255,255,0.5); overflow:hidden; display:flex; align-items:center; justify-content:center; background:rgba(255,255,255,0.2); flex-shrink:0; }
     .logo-text { color:white; font-weight:900; font-size:13px; letter-spacing:1px; }
     .logo-sub { color:rgba(255,255,255,0.7); font-size:8px; letter-spacing:1px; }
     .badge { background:rgba(255,255,255,0.15); border:1px solid rgba(255,255,255,0.4); border-radius:4px; padding:3px 8px; color:white; font-size:9px; font-weight:700; letter-spacing:1.5px; }
@@ -72,10 +73,7 @@ const generateIDCardPDF = async (member, idCardNumber) => {
   <div class="card">
     <div class="header">
       <div style="display:flex;align-items:center;gap:8px;">
-        ${logoBase64
-          ? `<img src="${logoBase64}" class="logo-img" />`
-          : `<div class="logo-circle">N</div>`
-        }
+        <div class="logo-circle">${logoHtml}</div>
         <div>
           <div class="logo-text">NCIO</div>
           <div class="logo-sub">OFFICIAL MEMBER</div>
@@ -215,7 +213,7 @@ const submitApplication = async (request, reply) => {
 
     try {
       await transporter.sendMail({
-        from: process.env.SMTP_USER,
+        from: FROM_EMAIL,
         to: process.env.ADMIN_EMAIL,
         subject: `New NCIO Application - ${applicationId}`,
         html: `
@@ -283,10 +281,19 @@ const approveMember = async (request, reply) => {
 
     const m = member.rows[0];
     const month = new Date().toISOString().slice(2, 7).replace('-', '');
-    const countResult = await pool.query("SELECT COUNT(*) FROM members WHERE status = 'APPROVED'");
-    const count = String(parseInt(countResult.rows[0].count) + 1).padStart(4, '0');
+
+    // ✅ FIXED: Use MAX to avoid duplicate ID card numbers
     const zoneCode = m.zone?.substring(0, 2).toUpperCase() || 'Z0';
-    const idCardNumber = `TN-${zoneCode}-${month}-${count}`;
+    const prefix = `TN-${zoneCode}-${month}-`;
+    const maxResult = await pool.query(
+      `SELECT id_card_number FROM members WHERE id_card_number LIKE $1 ORDER BY id_card_number DESC LIMIT 1`,
+      [`${prefix}%`]
+    );
+    let nextNum = 1;
+    if (maxResult.rows[0]) {
+      nextNum = parseInt(maxResult.rows[0].id_card_number.split('-').pop()) + 1;
+    }
+    const idCardNumber = `${prefix}${String(nextNum).padStart(4, '0')}`;
 
     await pool.query(
       `UPDATE members SET status = 'APPROVED', id_card_number = $1, approved_at = NOW() WHERE id = $2`,
@@ -295,14 +302,18 @@ const approveMember = async (request, reply) => {
 
     try {
       const pdfBuffer = await generateIDCardPDF(m, idCardNumber);
+      const logoPath = path.join(__dirname, '../../../client/public/logo/1.png');
+
       await transporter.sendMail({
-        from: process.env.SMTP_USER,
+        from: FROM_EMAIL,
         to: m.email,
         subject: `🎉 NCIO Membership Approved - ${m.application_id}`,
         html: `
           <div style="font-family:Arial,sans-serif;max-width:500px;margin:auto;border:2px solid #1a237e;border-radius:12px;overflow:hidden;">
             <div style="background:linear-gradient(135deg,#0d1b5e,#1a237e);padding:24px;text-align:center;">
-              <h1 style="color:white;margin:0;font-size:22px;">NCIO</h1>
+              <img src="cid:ncio_logo" alt="NCIO Logo"
+                style="width:60px;height:60px;border-radius:50%;border:3px solid rgba(255,255,255,0.5);object-fit:cover;display:block;margin:0 auto 12px;" />
+              <h1 style="color:white;margin:0;font-size:22px;letter-spacing:2px;">NCIO</h1>
               <p style="color:rgba(255,255,255,0.7);margin:4px 0 0;font-size:12px;">OFFICIAL MEMBER</p>
             </div>
             <div style="padding:24px;">
@@ -338,6 +349,11 @@ const approveMember = async (request, reply) => {
             filename: `NCIO_${m.application_id}_IDCard.pdf`,
             content: pdfBuffer,
             contentType: 'application/pdf',
+          },
+          {
+            filename: '1.png',
+            path: logoPath,
+            cid: 'ncio_logo',
           },
         ],
       });
