@@ -18,5 +18,5 @@ const login = async (request, reply) => {
     reply.code(500).send({ error: err.message });
   }
 };
-
+ 
 module.exports = { login };

@@ -36,12 +36,11 @@ fastify.register(require('./modules/settings.module'), {
 fastify.register(require('./modules/profile.module'), {
   prefix: '/api/profile',
 });
+
 // Health Check
-fastify.get('/', async () => ({
+fastify.get('/health', async () => ({
   status: 'NCIO Server Running 🚀',
 }));
-
-
 
 // Start Server
 const start = async () => {
