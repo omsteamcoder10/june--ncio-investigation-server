@@ -1,5 +1,6 @@
 const fastify = require('fastify')({ logger: true });
 const cors = require('@fastify/cors');
+
 require('dotenv').config();
 
 // CORS
@@ -39,6 +40,10 @@ fastify.register(require('./modules/settings.module'), {
 
 fastify.register(require('./modules/profile.module'), {
   prefix: '/api/profile',
+});
+
+fastify.register(require('./modules/content.module'), {
+  prefix: '/api/content',
 });
 
 // Health Check
