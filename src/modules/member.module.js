@@ -1,4 +1,5 @@
 const {
+  ensureMemberVerificationSchema,
   getLatestId,
   getDashboardStats,
   publicSearch,
@@ -7,10 +8,15 @@ const {
   getMember,
   approveMember,
   rejectMember,
+  sendIdCardEmail,
+  sendVerificationOtp,
+  verifyOtp,
   deleteMember,
 } = require('../controllers/member.controller');
 
 async function memberModule(fastify, options) {
+  await ensureMemberVerificationSchema();
+
   fastify.get('/latest-id', getLatestId);
   fastify.get('/stats/dashboard', getDashboardStats);
   fastify.get('/search/public', publicSearch);
@@ -19,6 +25,9 @@ async function memberModule(fastify, options) {
   fastify.get('/:id', getMember);
   fastify.patch('/:id/approve', approveMember);
   fastify.patch('/:id/reject', rejectMember);
+  fastify.post('/:id/send-id-card', sendIdCardEmail);
+  fastify.post('/:id/send-verification-otp', sendVerificationOtp);
+  fastify.post('/:id/verify-otp', verifyOtp);
   fastify.delete('/:id', deleteMember);
 }
 

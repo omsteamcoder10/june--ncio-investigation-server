@@ -3,6 +3,7 @@ const nodemailer = require('nodemailer');
 const puppeteer = require('puppeteer');
 const path = require('path');
 const fs = require('fs');
+const crypto = require('crypto');
 require('dotenv').config();
 
 const transporter = nodemailer.createTransport({
@@ -16,6 +17,46 @@ const transporter = nodemailer.createTransport({
 });
 
 const FROM_EMAIL = `"NCIO Official" <${process.env.SMTP_USER}>`;
+
+const resolveAdminIdentifier = (request) => {
+  const authHeader = request.headers.authorization || '';
+  const token = authHeader.replace(/^Bearer\s+/i, '');
+
+  if (token === 'ncio-admin-token') {
+    return process.env.ADMIN_USERNAME || 'admin';
+  }
+
+  return process.env.ADMIN_USERNAME || 'admin';
+};
+
+const maskEmail = (email = '') => {
+  const [name, domain] = email.split('@');
+  if (!name || !domain) return email;
+
+  const visible = name.slice(0, Math.min(2, name.length));
+  return `${visible}***@${domain}`;
+};
+
+const ensureMemberVerificationSchema = async () => {
+  await pool.query(`
+    ALTER TABLE members
+    ADD COLUMN IF NOT EXISTS email_verified_at TIMESTAMP,
+    ADD COLUMN IF NOT EXISTS email_verified_by VARCHAR(255)
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS admin_verification_otps (
+      id SERIAL PRIMARY KEY,
+      member_id INTEGER REFERENCES members(id),
+      channel VARCHAR(10) NOT NULL,
+      code VARCHAR(6) NOT NULL,
+      expires_at TIMESTAMP NOT NULL,
+      verified BOOLEAN DEFAULT false,
+      triggered_by VARCHAR(255),
+      created_at TIMESTAMP DEFAULT NOW()
+    )
+  `);
+};
 
 // ✅ Logo base64 - puppeteer render-la use agum
 const getLogoBase64 = () => {
@@ -35,71 +76,113 @@ const generateIDCardPDF = async (member, idCardNumber) => {
   const primary = isState ? '#7f0000' : isZonal ? '#4a148c' : '#0d1b5e';
   const secondary = isState ? '#b71c1c' : isZonal ? '#7b1fa2' : '#1a237e';
   const label = isState ? 'STATE' : isZonal ? 'ZONAL' : 'DISTRICT';
-  const approvedDate = new Date().toLocaleDateString('en-IN');
+  const approvedDate = new Date().toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' });
   const dob = member.date_of_birth
-    ? new Date(member.date_of_birth).toLocaleDateString('en-IN') : '-';
+    ? new Date(member.date_of_birth).toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' })
+    : '-';
 
-  // ✅ Logo base64 ga convert - puppeteer correct-a render pannum
   const logoBase64 = getLogoBase64();
   const logoHtml = logoBase64
-    ? `<img src="${logoBase64}" style="width:32px;height:32px;object-fit:cover;border-radius:50%;" />`
-    : `<div style="color:white;font-weight:900;font-size:13px;">N</div>`;
+    ? `<img src="${logoBase64}" style="width:100%;height:100%;object-fit:cover;" />`
+    : `<div style="color:${primary};font-weight:900;font-size:18px;">N</div>`;
+
+  const photoHtml = member.photo
+    ? `<img src="${member.photo}" style="width:92px;height:92px;border-radius:50%;object-fit:cover;border:3px solid ${primary};margin-top:14px;box-shadow:0 3px 10px rgba(0,0,0,0.18);background:#fff;" />`
+    : `<div style="width:92px;height:92px;border-radius:50%;background:#f3f4f6;border:3px solid ${primary};margin-top:14px;display:flex;align-items:center;justify-content:center;color:#d1d5db;font-size:30px;">?</div>`;
 
   const html = `<!DOCTYPE html>
   <html><head><meta charset="UTF-8">
   <style>
     * { margin:0; padding:0; box-sizing:border-box; }
-    body { width:342px; height:216px; font-family:Arial,sans-serif; overflow:hidden; }
-    .card { width:342px; height:216px; border:3px solid ${primary}; border-radius:12px; overflow:hidden; position:relative; background:#fff; }
-    .header { background:linear-gradient(135deg,${primary} 0%,${secondary} 100%); padding:10px 14px; display:flex; align-items:center; justify-content:space-between; }
-    .logo-circle { width:32px; height:32px; border-radius:50%; border:2px solid rgba(255,255,255,0.5); overflow:hidden; display:flex; align-items:center; justify-content:center; background:rgba(255,255,255,0.2); flex-shrink:0; }
-    .logo-text { color:white; font-weight:900; font-size:13px; letter-spacing:1px; }
-    .logo-sub { color:rgba(255,255,255,0.7); font-size:8px; letter-spacing:1px; }
-    .badge { background:rgba(255,255,255,0.15); border:1px solid rgba(255,255,255,0.4); border-radius:4px; padding:3px 8px; color:white; font-size:9px; font-weight:700; letter-spacing:1.5px; }
-    .body { padding:12px 14px; display:flex; gap:12px; align-items:flex-start; }
-    .photo { width:70px; height:84px; border-radius:6px; border:3px solid ${primary}; object-fit:cover; flex-shrink:0; }
-    .photo-placeholder { width:70px; height:84px; border-radius:6px; border:3px solid ${primary}; background:${primary}22; display:flex; align-items:center; justify-content:center; flex-direction:column; gap:4px; flex-shrink:0; }
-    .initial { width:36px; height:36px; border-radius:50%; background:${primary}; display:flex; align-items:center; justify-content:center; color:white; font-weight:900; font-size:16px; }
-    .name { font-weight:900; color:#111827; font-size:13px; margin-bottom:3px; }
-    .sub { font-size:10px; color:#6b7280; margin-bottom:8px; }
-    .info-row { display:flex; gap:4px; font-size:9.5px; margin-bottom:3px; }
-    .info-label { color:#9ca3af; min-width:40px; }
-    .info-value { color:#1f2937; font-weight:600; }
-    .footer { position:absolute; bottom:0; left:0; right:0; background:linear-gradient(90deg,${primary} 0%,${secondary} 100%); padding:6px 14px; display:flex; justify-content:space-between; align-items:center; }
-    .card-no { font-family:monospace; font-size:10px; color:white; font-weight:700; letter-spacing:1px; }
-    .valid { font-size:8.5px; color:rgba(255,255,255,0.75); }
+    body { width:260px; font-family:Arial,sans-serif; }
+    .card {
+      width:260px; min-height:400px; border-radius:10px; overflow:hidden; position:relative;
+      background:#fff; border:2px solid ${primary};
+      display:flex; flex-direction:column;
+    }
+    .header {
+      background:linear-gradient(135deg, ${primary} 0%, ${secondary} 100%);
+      padding:14px 10px 12px; text-align:center; position:relative;
+    }
+    .logo-circle {
+      width:46px; height:46px; border-radius:50%; margin:0 auto 6px;
+      background:white; border:2px solid rgba(255,255,255,0.7);
+      display:flex; align-items:center; justify-content:center; overflow:hidden;
+    }
+    .org-line { color:white; font-weight:900; font-size:13px; letter-spacing:1px; line-height:1.25; }
+    .badge {
+      margin-top:4px; display:inline-block;
+      background:rgba(255,255,255,0.15); border:1px solid rgba(255,255,255,0.4);
+      border-radius:4px; padding:2px 10px; color:white; font-size:8px; font-weight:700; letter-spacing:1.5px;
+    }
+    .photo-wrap { display:flex; justify-content:center; margin-top:-2px; }
+    .name {
+      text-align:center; font-weight:900; font-size:16px; color:${primary};
+      margin-top:10px; margin-bottom:4px; text-transform:uppercase; letter-spacing:0.5px; padding:0 10px;
+    }
+    .divider {
+      height:2px; width:70%; margin:2px auto 12px;
+      background:linear-gradient(90deg, transparent, ${secondary}, transparent);
+    }
+    .details { flex:1; padding:0 18px 16px; display:flex; flex-direction:column; gap:8px; }
+    .info-row { display:flex; font-size:10.5px; }
+    .info-label { width:90px; color:#374151; font-weight:700; }
+    .info-colon { margin-right:6px; color:#374151; font-weight:700; }
+    .info-value { flex:1; color:#111827; font-weight:500; overflow-wrap:anywhere; }
+    .footer {
+      background:linear-gradient(90deg, ${primary} 0%, ${secondary} 100%);
+      padding:6px 14px; display:flex; justify-content:space-between; align-items:center;
+    }
+    .card-no { font-family:monospace; font-size:9px; color:white; font-weight:700; letter-spacing:0.5px; }
+    .valid { font-size:8px; color:rgba(255,255,255,0.75); }
   </style></head>
   <body>
-  <div class="card">
-    <div class="header">
-      <div style="display:flex;align-items:center;gap:8px;">
+    <div class="card">
+      <div class="header">
         <div class="logo-circle">${logoHtml}</div>
-        <div>
-          <div class="logo-text">NCIO</div>
-          <div class="logo-sub">OFFICIAL MEMBER</div>
+        <div class="org-line">NATIONAL CRIME</div>
+        <div class="org-line">INVESTIGATES ORG.</div>
+        <div class="badge">${label} MEMBER</div>
+      </div>
+
+      <div class="photo-wrap">${photoHtml}</div>
+
+      <div class="name">${member.full_name}</div>
+      <div class="divider"></div>
+
+      <div class="details">
+        <div class="info-row">
+          <span class="info-label">Father Name</span>
+          <span class="info-colon">:</span>
+          <span class="info-value">${member.father_name || '-'}</span>
+        </div>
+        <div class="info-row">
+          <span class="info-label">Date of Birth</span>
+          <span class="info-colon">:</span>
+          <span class="info-value">${dob}</span>
+        </div>
+        <div class="info-row">
+          <span class="info-label">Mobile No.</span>
+          <span class="info-colon">:</span>
+          <span class="info-value">${member.phone || '-'}</span>
+        </div>
+        <div class="info-row">
+          <span class="info-label">Zone</span>
+          <span class="info-colon">:</span>
+          <span class="info-value">${member.zone || '-'}</span>
+        </div>
+        <div class="info-row">
+          <span class="info-label">District</span>
+          <span class="info-colon">:</span>
+          <span class="info-value">${member.district || '-'}</span>
         </div>
       </div>
-      <div class="badge">${label}</div>
-    </div>
-    <div class="body">
-      ${member.photo
-        ? `<img src="${member.photo}" class="photo" />`
-        : `<div class="photo-placeholder"><div class="initial">${member.full_name?.charAt(0).toUpperCase()}</div><div style="font-size:8px;color:${primary};font-weight:600;">MEMBER</div></div>`
-      }
-      <div style="flex:1;">
-        <div class="name">${member.full_name}</div>
-        <div class="sub">S/o ${member.father_name}</div>
-        <div class="info-row"><span class="info-label">DOB:</span><span class="info-value">${dob}</span></div>
-        <div class="info-row"><span class="info-label">District:</span><span class="info-value">${member.district || '-'}</span></div>
-        <div class="info-row"><span class="info-label">Zone:</span><span class="info-value">${member.zone}</span></div>
-        <div class="info-row"><span class="info-label">Phone:</span><span class="info-value">${member.phone}</span></div>
+
+      <div class="footer">
+        <div class="card-no">${idCardNumber}</div>
+        <div class="valid">Valid: ${approvedDate}</div>
       </div>
     </div>
-    <div class="footer">
-      <div class="card-no">${idCardNumber}</div>
-      <div class="valid">Valid: ${approvedDate}</div>
-    </div>
-  </div>
   </body></html>`;
 
   const browser = await puppeteer.launch({
@@ -107,25 +190,35 @@ const generateIDCardPDF = async (member, idCardNumber) => {
     args: ['--no-sandbox', '--disable-setuid-sandbox'],
   });
   const page = await browser.newPage();
-  await page.setViewport({ width: 342, height: 216 });
+  await page.setViewport({ width: 260, height: 420 });
   await page.setContent(html, { waitUntil: 'networkidle0' });
+
+  const cardElement = await page.$('.card');
+  const boundingBox = await cardElement.boundingBox();
+
   const pdfBuffer = await page.pdf({
-    width: '85.6mm',
-    height: '54mm',
+    width: `${Math.ceil(boundingBox.width)}px`,
+    height: `${Math.ceil(boundingBox.height)}px`,
     printBackground: true,
     margin: { top: 0, right: 0, bottom: 0, left: 0 },
   });
   await browser.close();
   return pdfBuffer;
 };
-
 // GET latest member ID
 const getLatestId = async (request, reply) => {
   try {
+    const month = new Date().toISOString().slice(2, 7).replace('-', '');
+    const prefix = `NCIO-${month}-`;
     const result = await pool.query(
-      'SELECT application_id FROM members ORDER BY created_at DESC LIMIT 1'
+      `SELECT application_id
+       FROM members
+       WHERE application_id LIKE $1
+       ORDER BY application_id DESC
+       LIMIT 1`,
+      [`${prefix}%`]
     );
-    const latestId = result.rows[0]?.application_id || 'NCIO0000';
+    const latestId = result.rows[0]?.application_id || `${prefix}0000`;
     return { latestId };
   } catch (err) {
     reply.code(500).send({ error: err.message });
@@ -166,12 +259,12 @@ const getDashboardStats = async (request, reply) => {
 // GET public search
 const publicSearch = async (request, reply) => {
   try {
-    const { mobile, dob } = request.query;
-    if (!mobile || !dob) return reply.code(400).send({ error: 'Mobile and DOB required' });
+    const { aadhar, dob } = request.query;
+    if (!aadhar || !dob) return reply.code(400).send({ error: 'Aadhar number and DOB required' });
     const result = await pool.query(
-      `SELECT full_name, district, zone, membership_type, status, id_card_number, application_id, photo, father_name, approved_at
-       FROM members WHERE phone = $1 AND date_of_birth::text = $2`,
-      [mobile, dob]
+      `SELECT full_name, district, zone, membership_type, status, id_card_number, application_id, photo, father_name, approved_at, created_at
+       FROM members WHERE aadhar_number = $1 AND date_of_birth::text = $2`,
+      [aadhar, dob]
     );
     if (!result.rows[0]) return reply.code(404).send({ error: 'Member not found' });
     return result.rows[0];
@@ -191,6 +284,19 @@ const submitApplication = async (request, reply) => {
   } = request.body;
 
   try {
+    const existing = await pool.query(
+      'SELECT application_id, status FROM members WHERE aadhar_number = $1 LIMIT 1',
+      [aadharNumber]
+    );
+
+    if (existing.rows[0]) {
+      return reply.code(409).send({
+        error: 'An application already exists with this Aadhar number.',
+        existingApplicationId: existing.rows[0].application_id,
+        existingStatus: existing.rows[0].status,
+      });
+    }
+
     const result = await pool.query(
       `INSERT INTO members (
         application_id, full_name, date_of_birth, father_name, guardian_name,
@@ -300,68 +406,6 @@ const approveMember = async (request, reply) => {
       [idCardNumber, request.params.id]
     );
 
-    try {
-      const pdfBuffer = await generateIDCardPDF(m, idCardNumber);
-      const logoPath = path.join(__dirname, '../../../client/public/logo/1.png');
-
-      await transporter.sendMail({
-        from: FROM_EMAIL,
-        to: m.email,
-        subject: `🎉 NCIO Membership Approved - ${m.application_id}`,
-        html: `
-          <div style="font-family:Arial,sans-serif;max-width:500px;margin:auto;border:2px solid #1a237e;border-radius:12px;overflow:hidden;">
-            <div style="background:linear-gradient(135deg,#0d1b5e,#1a237e);padding:24px;text-align:center;">
-              <img src="cid:ncio_logo" alt="NCIO Logo"
-                style="width:60px;height:60px;border-radius:50%;border:3px solid rgba(255,255,255,0.5);object-fit:cover;display:block;margin:0 auto 12px;" />
-              <h1 style="color:white;margin:0;font-size:22px;letter-spacing:2px;">NCIO</h1>
-              <p style="color:rgba(255,255,255,0.7);margin:4px 0 0;font-size:12px;">OFFICIAL MEMBER</p>
-            </div>
-            <div style="padding:24px;">
-              <h2 style="color:#1a237e;">Congratulations, ${m.full_name}! 🎉</h2>
-              <p style="color:#555;">Your NCIO membership has been <strong style="color:green;">APPROVED</strong>.</p>
-              <table style="width:100%;border-collapse:collapse;margin:16px 0;">
-                <tr style="background:#f8f9ff;">
-                  <td style="padding:8px 12px;color:#888;font-size:13px;">Application ID</td>
-                  <td style="padding:8px 12px;font-weight:bold;color:#1a237e;">${m.application_id}</td>
-                </tr>
-                <tr>
-                  <td style="padding:8px 12px;color:#888;font-size:13px;">ID Card Number</td>
-                  <td style="padding:8px 12px;font-weight:bold;font-family:monospace;color:#1a237e;">${idCardNumber}</td>
-                </tr>
-                <tr style="background:#f8f9ff;">
-                  <td style="padding:8px 12px;color:#888;font-size:13px;">Membership Type</td>
-                  <td style="padding:8px 12px;font-weight:bold;">${m.membership_type}</td>
-                </tr>
-                <tr>
-                  <td style="padding:8px 12px;color:#888;font-size:13px;">District</td>
-                  <td style="padding:8px 12px;font-weight:bold;">${m.district || '-'}</td>
-                </tr>
-              </table>
-              <p style="color:#555;font-size:13px;">Your ID card is attached to this email. Please download and keep it safe.</p>
-            </div>
-            <div style="background:#f8f9ff;padding:12px;text-align:center;border-top:1px solid #e5e7eb;">
-              <p style="color:#888;font-size:11px;margin:0;">© 2026 NCIO. All rights reserved.</p>
-            </div>
-          </div>
-        `,
-        attachments: [
-          {
-            filename: `NCIO_${m.application_id}_IDCard.pdf`,
-            content: pdfBuffer,
-            contentType: 'application/pdf',
-          },
-          {
-            filename: '1.png',
-            path: logoPath,
-            cid: 'ncio_logo',
-          },
-        ],
-      });
-      console.log('✅ Approval email with ID card sent to member');
-    } catch (emailErr) {
-      console.error('❌ Approval email error:', emailErr.message);
-    }
-
     return { message: 'Member approved successfully', idCardNumber };
   } catch (err) {
     console.error('APPROVE ERROR:', err.message);
@@ -382,6 +426,183 @@ const rejectMember = async (request, reply) => {
   }
 };
 
+// POST send ID card email (admin-triggered)
+const sendIdCardEmail = async (request, reply) => {
+  try {
+    const member = await pool.query('SELECT * FROM members WHERE id = $1', [request.params.id]);
+    if (!member.rows[0]) return reply.code(404).send({ error: 'Member not found' });
+
+    const m = member.rows[0];
+    if (m.status !== 'APPROVED') {
+      return reply.code(400).send({ error: 'Member is not approved yet.' });
+    }
+    if (!m.id_card_number) {
+      return reply.code(400).send({ error: 'No ID card number found for this member.' });
+    }
+
+    const pdfBuffer = await generateIDCardPDF(m, m.id_card_number);
+    const logoPath = path.join(__dirname, '../../../client/public/logo/1.png');
+
+    await transporter.sendMail({
+      from: FROM_EMAIL,
+      to: m.email,
+      subject: `🎉 NCIO Membership Approved - ${m.application_id}`,
+      html: `
+        <div style="font-family:Arial,sans-serif;max-width:500px;margin:auto;border:2px solid #1a237e;border-radius:12px;overflow:hidden;">
+          <div style="background:linear-gradient(135deg,#0d1b5e,#1a237e);padding:24px;text-align:center;">
+            <img src="cid:ncio_logo" alt="NCIO Logo"
+              style="width:60px;height:60px;border-radius:50%;border:3px solid rgba(255,255,255,0.5);object-fit:cover;display:block;margin:0 auto 12px;" />
+            <h1 style="color:white;margin:0;font-size:22px;letter-spacing:2px;">NCIO</h1>
+            <p style="color:rgba(255,255,255,0.7);margin:4px 0 0;font-size:12px;">OFFICIAL MEMBER</p>
+          </div>
+          <div style="padding:24px;">
+            <h2 style="color:#1a237e;">Congratulations, ${m.full_name}! 🎉</h2>
+            <p style="color:#555;">Your NCIO membership has been <strong style="color:green;">APPROVED</strong>.</p>
+            <table style="width:100%;border-collapse:collapse;margin:16px 0;">
+              <tr style="background:#f8f9ff;">
+                <td style="padding:8px 12px;color:#888;font-size:13px;">Application ID</td>
+                <td style="padding:8px 12px;font-weight:bold;color:#1a237e;">${m.application_id}</td>
+              </tr>
+              <tr>
+                <td style="padding:8px 12px;color:#888;font-size:13px;">ID Card Number</td>
+                <td style="padding:8px 12px;font-weight:bold;font-family:monospace;color:#1a237e;">${m.id_card_number}</td>
+              </tr>
+              <tr style="background:#f8f9ff;">
+                <td style="padding:8px 12px;color:#888;font-size:13px;">Membership Type</td>
+                <td style="padding:8px 12px;font-weight:bold;">${m.membership_type}</td>
+              </tr>
+              <tr>
+                <td style="padding:8px 12px;color:#888;font-size:13px;">District</td>
+                <td style="padding:8px 12px;font-weight:bold;">${m.district || '-'}</td>
+              </tr>
+            </table>
+            <p style="color:#555;font-size:13px;">Your ID card is attached to this email. Please download and keep it safe.</p>
+          </div>
+          <div style="background:#f8f9ff;padding:12px;text-align:center;border-top:1px solid #e5e7eb;">
+            <p style="color:#888;font-size:11px;margin:0;">© 2026 NCIO. All rights reserved.</p>
+          </div>
+        </div>
+      `,
+      attachments: [
+        {
+          filename: `NCIO_${m.application_id}_IDCard.pdf`,
+          content: pdfBuffer,
+          contentType: 'application/pdf',
+        },
+        {
+          filename: '1.png',
+          path: logoPath,
+          cid: 'ncio_logo',
+        },
+      ],
+    });
+
+    return { success: true, message: 'ID card emailed successfully.' };
+  } catch (err) {
+    console.error('SEND ID CARD EMAIL ERROR:', err.message);
+    reply.code(500).send({ error: 'Failed to send email: ' + err.message });
+  }
+};
+// POST send admin-triggered email verification OTP
+const sendVerificationOtp = async (request, reply) => {
+  try {
+    const { channel } = request.body || {};
+    if (channel !== 'email') {
+      return reply.code(400).send({ error: 'Only email verification is supported.' });
+    }
+
+    const member = await pool.query(
+      'SELECT id, full_name, email FROM members WHERE id = $1',
+      [request.params.id]
+    );
+    if (!member.rows[0]) return reply.code(404).send({ error: 'Member not found' });
+
+    const m = member.rows[0];
+    if (!m.email) return reply.code(400).send({ error: 'Member email is missing.' });
+
+    const code = String(crypto.randomInt(0, 1000000)).padStart(6, '0');
+    const triggeredBy = resolveAdminIdentifier(request);
+
+    await pool.query(
+      `INSERT INTO admin_verification_otps
+       (member_id, channel, code, expires_at, triggered_by)
+       VALUES ($1, $2, $3, NOW() + INTERVAL '10 minutes', $4)`,
+      [m.id, channel, code, triggeredBy]
+    );
+
+    await transporter.sendMail({
+      from: FROM_EMAIL,
+      to: m.email,
+      subject: 'NCIO Application Verification Code',
+      text: `Your NCIO application verification code is ${code}. Enter this code in the NCIO portal to verify your application. This code expires in 10 minutes. If you did not request this, please ignore this email.`,
+    });
+
+    return { success: true, sentTo: maskEmail(m.email) };
+  } catch (err) {
+    console.error('SEND VERIFICATION OTP ERROR:', err.message);
+    reply.code(500).send({ error: err.message });
+  }
+};
+
+// POST verify admin-triggered OTP
+const verifyOtp = async (request, reply) => {
+  try {
+    const { channel, code } = request.body || {};
+    if (channel !== 'email') {
+      return reply.code(400).send({ error: 'Only email verification is supported.' });
+    }
+
+    const normalizedCode = String(code || '').trim();
+    if (!/^\d{6}$/.test(normalizedCode)) {
+      return reply.code(400).send({ error: 'Invalid or expired code' });
+    }
+
+    const otp = await pool.query(
+      `SELECT id
+       FROM admin_verification_otps
+       WHERE member_id = $1
+         AND channel = $2
+         AND verified = false
+         AND expires_at > NOW()
+       ORDER BY created_at DESC
+       LIMIT 1`,
+      [request.params.id, channel]
+    );
+
+    if (!otp.rows[0]) {
+      return reply.code(400).send({ error: 'Invalid or expired code' });
+    }
+
+    const match = await pool.query(
+      `UPDATE admin_verification_otps
+       SET verified = true
+       WHERE id = $1 AND code = $2
+       RETURNING id`,
+      [otp.rows[0].id, normalizedCode]
+    );
+
+    if (!match.rows[0]) {
+      return reply.code(400).send({ error: 'Invalid or expired code' });
+    }
+
+    const verifiedBy = resolveAdminIdentifier(request);
+    const member = await pool.query(
+      `UPDATE members
+       SET email_verified_at = NOW(), email_verified_by = $1
+       WHERE id = $2
+       RETURNING email_verified_at, email_verified_by`,
+      [verifiedBy, request.params.id]
+    );
+
+    if (!member.rows[0]) return reply.code(404).send({ error: 'Member not found' });
+
+    return { success: true, member: member.rows[0] };
+  } catch (err) {
+    console.error('VERIFY OTP ERROR:', err.message);
+    reply.code(500).send({ error: err.message });
+  }
+};
+
 // DELETE member
 const deleteMember = async (request, reply) => {
   try {
@@ -398,6 +619,7 @@ const deleteMember = async (request, reply) => {
 };
 
 module.exports = {
+  ensureMemberVerificationSchema,
   getLatestId,
   getDashboardStats,
   publicSearch,
@@ -406,5 +628,8 @@ module.exports = {
   getMember,
   approveMember,
   rejectMember,
+  sendIdCardEmail,
+  sendVerificationOtp,
+  verifyOtp,
   deleteMember,
 };

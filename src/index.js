@@ -1,7 +1,9 @@
 const fastify = require('fastify')({ logger: true });
 const cors = require('@fastify/cors');
-
+const fastifyStatic = require('@fastify/static');
+const path = require('path');
 require('dotenv').config();
+const startMailListener = require('./mailListener');
 
 // CORS
 const allowedOrigins = process.env.CORS_ORIGIN
@@ -13,6 +15,10 @@ fastify.register(cors, {
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'],
 });
 
+fastify.register(fastifyStatic, {
+  root: path.join(__dirname, 'uploads'),
+  prefix: '/uploads/',
+});
 // Routes
 fastify.register(require('./modules/member.module'), {
   prefix: '/api/members',
@@ -34,6 +40,9 @@ fastify.register(require('./modules/updates.module'), {
   prefix: '/api/updates',
 });
 
+fastify.register(require('./modules/gallery.module'), {
+  prefix: '/api/gallery',
+});
 fastify.register(require('./modules/settings.module'), {
   prefix: '/api/settings',
 });
@@ -46,6 +55,18 @@ fastify.register(require('./modules/content.module'), {
   prefix: '/api/content',
 });
 
+fastify.register(require('./modules/seo.module'), {
+  prefix: '/api/seo',
+});
+
+fastify.register(require('./modules/tags.module'), {
+  prefix: '/api/tags',
+});
+
+
+fastify.register(require('./modules/contact.module'), {
+  prefix: '/api/contact',
+});
 // Health Check
 fastify.get('/health', async () => ({
   status: 'NCIO Server Running 🚀',
@@ -68,4 +89,5 @@ const start = async () => {
   }
 };
 
+startMailListener();
 start();
