@@ -71,7 +71,6 @@ fastify.register(require('./modules/contact.module'), {
 fastify.get('/health', async () => ({
   status: 'NCIO Server Running 🚀',
 }));
-
 // Start Server
 const start = async () => {
   try {
