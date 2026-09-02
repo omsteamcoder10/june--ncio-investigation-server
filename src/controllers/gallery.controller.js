@@ -1,7 +1,7 @@
 const pool = require('../plugins/db');
-const fs = require('fs');
 const path = require('path');
-const { pipeline } = require('stream/promises');
+const { randomUUID } = require('crypto');
+const { uploadToR2, deleteFromR2 } = require('../services/r2.service');
 
 const ensureGallerySchema = async () => {
   await pool.query(`
@@ -48,13 +48,21 @@ const uploadGalleryItem = async (request, reply) => {
       return reply.code(400).send({ error: 'Invalid type. Must be photo, video, or update.' });
     }
 
-    const uniqueName = `${Date.now()}-${Math.round(Math.random() * 1e9)}${path.extname(data.filename)}`;
-    const uploadDir = path.join(__dirname, '../uploads/gallery');
-    const destPath = path.join(uploadDir, uniqueName);
+    const ext = path.extname(data.filename);
+    const uniqueName = `${randomUUID()}${ext}`;
 
-    await pipeline(data.file, fs.createWriteStream(destPath));
+    // Read the incoming file stream into a buffer
+    const chunks = [];
+    for await (const chunk of data.file) {
+      chunks.push(chunk);
+    }
+    const buffer = Buffer.concat(chunks);
 
-    const filePath = `/uploads/gallery/${uniqueName}`;
+    // Upload directly to Cloudflare R2 instead of local disk
+    // Keep new uploads in the same gallery/images or gallery/videos
+    // subfolder structure that existing items already use.
+    const subFolder = typeField === 'video' ? 'gallery/videos' : 'gallery/images';
+    const filePath = await uploadToR2(buffer, uniqueName, data.mimetype, subFolder);
 
     const result = await pool.query(
       `INSERT INTO gallery_items (type, file_path, original_name)
@@ -83,10 +91,8 @@ const deleteGalleryItem = async (request, reply) => {
       return reply.code(404).send({ error: 'Item not found' });
     }
 
-    const filePath = path.join(__dirname, '../..', result.rows[0].file_path);
-    fs.unlink(filePath, (err) => {
-      if (err) console.error('File delete warning:', err.message);
-    });
+    // Actually delete the file from R2 storage
+    await deleteFromR2(result.rows[0].file_path);
 
     return { message: 'Deleted successfully' };
   } catch (err) {

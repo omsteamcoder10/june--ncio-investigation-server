@@ -1,7 +1,5 @@
 const fastify = require('fastify')({ logger: true });
 const cors = require('@fastify/cors');
-const fastifyStatic = require('@fastify/static');
-const path = require('path');
 require('dotenv').config();
 const startMailListener = require('./mailListener');
 
@@ -15,10 +13,8 @@ fastify.register(cors, {
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'],
 });
 
-fastify.register(fastifyStatic, {
-  root: path.join(__dirname, 'uploads'),
-  prefix: '/uploads/',
-});
+fastify.register(require('./routes/files.routes'));
+
 // Routes
 fastify.register(require('./modules/member.module'), {
   prefix: '/api/members',
