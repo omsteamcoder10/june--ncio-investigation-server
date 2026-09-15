@@ -2,17 +2,18 @@ const path = require('path');
 const crypto = require('crypto');
 
 const pool = require('../plugins/db');
+
 const {
   uploadToR2,
   deleteFromR2,
 } = require('../services/r2.service');
 
 /**
- * Convert Base64 image data URL into a Buffer.
- *
- * Example:
- * data:image/webp;base64,AAAA...
+ * =========================================================
+ * PARSE BASE64 IMAGE
+ * =========================================================
  */
+
 function parseBase64Image(dataUrl) {
   if (
     typeof dataUrl !== 'string' ||
@@ -40,7 +41,9 @@ function parseBase64Image(dataUrl) {
   );
 
   if (!buffer.length) {
-    throw new Error('Image data is empty');
+    throw new Error(
+      'Image data is empty'
+    );
   }
 
   const extensionMap = {
@@ -63,8 +66,11 @@ function parseBase64Image(dataUrl) {
 }
 
 /**
- * Create a safe unique filename for R2.
+ * =========================================================
+ * CREATE UNIQUE TEAM FILENAME
+ * =========================================================
  */
+
 function createTeamFilename(
   originalName,
   extension
@@ -96,13 +102,16 @@ function createTeamFilename(
 }
 
 /**
- * Process Team photo.
+ * =========================================================
+ * PROCESS TEAM PHOTO
+ * =========================================================
  *
- * If photo is already an R2/backend path,
- * keep it as it is.
+ * Existing DB photo:
+ * /files/team/member.webp
  *
- * If photo is Base64:
+ * Keep unchanged.
  *
+ * New Base64:
  * Base64
  *   ↓
  * Buffer
@@ -111,6 +120,7 @@ function createTeamFilename(
  *   ↓
  * /files/team/filename.webp
  */
+
 async function processTeamPhoto(
   photo,
   photoName
@@ -122,60 +132,82 @@ async function processTeamPhoto(
     return null;
   }
 
-  const trimmedPhoto = photo.trim();
+  const trimmedPhoto =
+    photo.trim();
 
-  // Already stored Team R2 path.
+  /**
+   * Existing Team R2 path.
+   *
+   * IMPORTANT:
+   * Do NOT upload again.
+   */
   if (
-    trimmedPhoto.startsWith('/files/team/')
+    trimmedPhoto.startsWith(
+      '/files/team/'
+    )
   ) {
     return trimmedPhoto;
   }
 
-  // Keep any existing backend file path.
+  /**
+   * Other existing backend R2 path.
+   */
   if (
-    trimmedPhoto.startsWith('/files/')
+    trimmedPhoto.startsWith(
+      '/files/'
+    )
   ) {
     return trimmedPhoto;
   }
 
-  // Convert Base64 image.
-  const parsed = parseBase64Image(
-    trimmedPhoto
-  );
+  /**
+   * New Base64 image.
+   */
+  const parsed =
+    parseBase64Image(
+      trimmedPhoto
+    );
 
   if (!parsed) {
     return null;
   }
 
-  const filename = createTeamFilename(
-    photoName || 'team-member',
-    parsed.extension
-  );
+  const filename =
+    createTeamFilename(
+      photoName ||
+        'team-member',
+      parsed.extension
+    );
 
-  const r2Url = await uploadToR2(
-    parsed.buffer,
-    filename,
-    parsed.contentType,
-    'team'
-  );
+  const r2Url =
+    await uploadToR2(
+      parsed.buffer,
+      filename,
+      parsed.contentType,
+      'team'
+    );
 
   return r2Url;
-};
+}
 
 /**
- * GET active Team members
+ * =========================================================
+ * GET ACTIVE TEAM
+ * =========================================================
  */
+
 const getAllTeam = async (
   request,
   reply
 ) => {
   try {
-    const result = await pool.query(
-      `SELECT *
-       FROM team_members
-       WHERE is_active = true
-       ORDER BY display_order ASC, created_at ASC`
-    );
+    const result =
+      await pool.query(`
+        SELECT *
+        FROM team_members
+        WHERE is_active = true
+        ORDER BY display_order ASC, created_at ASC
+      `);
 
     return result.rows;
   } catch (err) {
@@ -191,18 +223,22 @@ const getAllTeam = async (
 };
 
 /**
- * GET all Team members for Admin
+ * =========================================================
+ * GET ALL TEAM FOR ADMIN
+ * =========================================================
  */
+
 const getAllTeamAdmin = async (
   request,
   reply
 ) => {
   try {
-    const result = await pool.query(
-      `SELECT *
-       FROM team_members
-       ORDER BY display_order ASC, created_at ASC`
-    );
+    const result =
+      await pool.query(`
+        SELECT *
+        FROM team_members
+        ORDER BY display_order ASC, created_at ASC
+      `);
 
     return result.rows;
   } catch (err) {
@@ -218,8 +254,11 @@ const getAllTeamAdmin = async (
 };
 
 /**
- * ADD Team member
+ * =========================================================
+ * ADD TEAM MEMBER
+ * =========================================================
  */
+
 const addTeamMember = async (
   request,
   reply
@@ -232,55 +271,77 @@ const addTeamMember = async (
     photoName,
     greeting,
     display_order,
+    is_active,
   } = request.body || {};
 
   try {
+    /**
+     * Upload new photo to R2.
+     */
     const r2Photo =
       await processTeamPhoto(
         photo,
         photoName
       );
 
-    const result = await pool.query(
-      `INSERT INTO team_members
+    if (!r2Photo) {
+      return reply.code(400).send({
+        error:
+          'Team member photo is required',
+      });
+    }
+
+    /**
+     * DB INSERT.
+     *
+     * No schema change.
+     */
+    const result =
+      await pool.query(
+        `
+        INSERT INTO team_members
         (
           name,
           role,
           district,
           photo,
           greeting,
-          display_order
+          display_order,
+          is_active
         )
-       VALUES
-        ($1, $2, $3, $4, $5, $6)
-       RETURNING *`,
-      [
-        typeof name === 'string'
-          ? name.trim()
-          : '',
+        VALUES
+        ($1, $2, $3, $4, $5, $6, $7)
+        RETURNING *
+        `,
+        [
+          typeof name === 'string'
+            ? name.trim()
+            : '',
 
-        typeof role === 'string'
-          ? role.trim()
-          : '',
+          typeof role === 'string'
+            ? role.trim()
+            : '',
 
-        typeof district === 'string'
-          ? district.trim()
-          : '',
+          typeof district === 'string'
+            ? district.trim()
+            : '',
 
-        r2Photo,
+          r2Photo,
 
-        typeof greeting === 'string' &&
-        greeting.trim()
-          ? greeting.trim()
-          : null,
+          typeof greeting === 'string' &&
+          greeting.trim()
+            ? greeting.trim()
+            : null,
 
-        Number.isFinite(
-          Number(display_order)
-        )
-          ? Number(display_order)
-          : 0,
-      ]
-    );
+          Number.isFinite(
+            Number(display_order)
+          )
+            ? Number(display_order)
+            : 0,
+
+          is_active ?? true,
+        ]
+      );
 
     return reply
       .code(201)
@@ -298,8 +359,11 @@ const addTeamMember = async (
 };
 
 /**
- * UPDATE Team member
+ * =========================================================
+ * UPDATE TEAM MEMBER
+ * =========================================================
  */
+
 const updateTeamMember = async (
   request,
   reply
@@ -316,12 +380,16 @@ const updateTeamMember = async (
   } = request.body || {};
 
   try {
-    // Get existing member first.
+    /**
+     * Get existing member.
+     */
     const existingResult =
       await pool.query(
-        `SELECT *
-         FROM team_members
-         WHERE id = $1`,
+        `
+        SELECT *
+        FROM team_members
+        WHERE id = $1
+        `,
         [request.params.id]
       );
 
@@ -334,83 +402,138 @@ const updateTeamMember = async (
       });
     }
 
+    /**
+     * Default:
+     * Keep existing R2 photo.
+     */
     let r2Photo =
       existingMember.photo || null;
 
-    // If a new Base64 image is supplied,
-    // upload it to R2.
+    /**
+     * Only process photo when a
+     * NEW Base64 photo is supplied.
+     */
     if (
       typeof photo === 'string' &&
       photo.trim()
     ) {
-      const newPhoto =
-        await processTeamPhoto(
-          photo,
-          photoName
-        );
+      const trimmedPhoto =
+        photo.trim();
 
-      if (newPhoto) {
-        r2Photo = newPhoto;
-
-        // Delete old R2 image only when
-        // replacing it with a new image.
-        if (
-          existingMember.photo &&
-          existingMember.photo.startsWith(
-            '/files/'
-          ) &&
-          existingMember.photo !== newPhoto
-        ) {
-          await deleteFromR2(
-            existingMember.photo
+      /**
+       * If frontend sends the same
+       * existing R2 path, do nothing.
+       */
+      if (
+        trimmedPhoto ===
+        existingMember.photo
+      ) {
+        r2Photo =
+          existingMember.photo;
+      } else {
+        /**
+         * New image.
+         */
+        const newPhoto =
+          await processTeamPhoto(
+            trimmedPhoto,
+            photoName
           );
+
+        if (newPhoto) {
+          r2Photo = newPhoto;
+
+          /**
+           * Delete OLD R2 image.
+           *
+           * This happens only after
+           * a new image has been uploaded.
+           */
+          if (
+            existingMember.photo &&
+            existingMember.photo.startsWith(
+              '/files/'
+            ) &&
+            existingMember.photo !==
+              newPhoto
+          ) {
+            try {
+              await deleteFromR2(
+                existingMember.photo
+              );
+
+              console.log(
+                'OLD TEAM IMAGE DELETED:',
+                existingMember.photo
+              );
+            } catch (deleteError) {
+              /**
+               * Do not fail the whole
+               * DB update if old R2
+               * cleanup fails.
+               */
+              console.error(
+                'OLD TEAM IMAGE DELETE ERROR:',
+                deleteError
+              );
+            }
+          }
         }
       }
     }
 
-    const result = await pool.query(
-      `UPDATE team_members
-       SET
-         name = $1,
-         role = $2,
-         district = $3,
-         photo = $4,
-         greeting = $5,
-         display_order = $6,
-         is_active = $7
-       WHERE id = $8
-       RETURNING *`,
-      [
-        typeof name === 'string'
-          ? name.trim()
-          : '',
+    /**
+     * UPDATE DB.
+     *
+     * Same existing table.
+     * No migration/schema change.
+     */
+    const result =
+      await pool.query(
+        `
+        UPDATE team_members
+        SET
+          name = $1,
+          role = $2,
+          district = $3,
+          photo = $4,
+          greeting = $5,
+          display_order = $6,
+          is_active = $7
+        WHERE id = $8
+        RETURNING *
+        `,
+        [
+          typeof name === 'string'
+            ? name.trim()
+            : '',
 
-        typeof role === 'string'
-          ? role.trim()
-          : '',
+          typeof role === 'string'
+            ? role.trim()
+            : '',
 
-        typeof district === 'string'
-          ? district.trim()
-          : '',
+          typeof district === 'string'
+            ? district.trim()
+            : '',
 
-        r2Photo,
+          r2Photo,
 
-        typeof greeting === 'string' &&
-        greeting.trim()
-          ? greeting.trim()
-          : null,
+          typeof greeting === 'string' &&
+          greeting.trim()
+            ? greeting.trim()
+            : null,
 
-        Number.isFinite(
-          Number(display_order)
-        )
-          ? Number(display_order)
-          : 0,
+          Number.isFinite(
+            Number(display_order)
+          )
+            ? Number(display_order)
+            : 0,
 
-        is_active ?? true,
+          is_active ?? true,
 
-        request.params.id,
-      ]
-    );
+          request.params.id,
+        ]
+      );
 
     return result.rows[0];
   } catch (err) {
@@ -426,21 +549,34 @@ const updateTeamMember = async (
 };
 
 /**
- * DELETE Team member
+ * =========================================================
+ * DELETE TEAM MEMBER
+ * =========================================================
  *
- * Also removes the image from R2.
+ * Admin Delete:
+ *
+ * 1. Get DB photo path
+ * 2. Delete DB row
+ * 3. Delete corresponding R2 file
+ *
+ * DB schema remains unchanged.
  */
+
 const deleteTeamMember = async (
   request,
   reply
 ) => {
   try {
-    // Get photo before deleting DB row.
+    /**
+     * Get existing photo first.
+     */
     const existingResult =
       await pool.query(
-        `SELECT photo
-         FROM team_members
-         WHERE id = $1`,
+        `
+        SELECT photo
+        FROM team_members
+        WHERE id = $1
+        `,
         [request.params.id]
       );
 
@@ -453,12 +589,18 @@ const deleteTeamMember = async (
       });
     }
 
-    const result = await pool.query(
-      `DELETE FROM team_members
-       WHERE id = $1
-       RETURNING id`,
-      [request.params.id]
-    );
+    /**
+     * Delete DB row.
+     */
+    const result =
+      await pool.query(
+        `
+        DELETE FROM team_members
+        WHERE id = $1
+        RETURNING id
+        `,
+        [request.params.id]
+      );
 
     if (!result.rows[0]) {
       return reply.code(404).send({
@@ -466,20 +608,39 @@ const deleteTeamMember = async (
       });
     }
 
-    // Delete corresponding R2 file.
+    /**
+     * Delete corresponding R2 file.
+     */
     if (
       existingMember.photo &&
       existingMember.photo.startsWith(
         '/files/'
       )
     ) {
-      await deleteFromR2(
-        existingMember.photo
-      );
+      try {
+        await deleteFromR2(
+          existingMember.photo
+        );
+
+        console.log(
+          'TEAM R2 IMAGE DELETED:',
+          existingMember.photo
+        );
+      } catch (r2Error) {
+        /**
+         * DB delete already succeeded.
+         * Log R2 cleanup error.
+         */
+        console.error(
+          'TEAM R2 DELETE ERROR:',
+          r2Error
+        );
+      }
     }
 
     return {
-      message: 'Team member deleted',
+      message:
+        'Team member deleted successfully',
     };
   } catch (err) {
     console.error(
