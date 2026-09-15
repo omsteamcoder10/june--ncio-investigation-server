@@ -6,12 +6,58 @@ const {
   deleteTeamMember,
 } = require('../controllers/team.controller');
 
+
 async function teamModule(fastify, options) {
-  fastify.get('/', getAllTeam);
-  fastify.get('/admin/all', getAllTeamAdmin);
-  fastify.post('/', addTeamMember);
-  fastify.put('/:id', updateTeamMember);
-  fastify.delete('/:id', deleteTeamMember);
+
+  // ==========================================================
+  // PUBLIC
+  // GET ACTIVE TEAM MEMBERS
+  // ==========================================================
+  fastify.get(
+    '/',
+    getAllTeam
+  );
+
+
+  // ==========================================================
+  // ADMIN
+  // GET ALL TEAM MEMBERS
+  // ==========================================================
+  fastify.get(
+    '/admin/all',
+    getAllTeamAdmin
+  );
+
+
+  // ==========================================================
+  // ADMIN
+  // ADD TEAM MEMBER
+  // ==========================================================
+  fastify.post(
+    '/',
+    addTeamMember
+  );
+
+
+  // ==========================================================
+  // ADMIN
+  // UPDATE TEAM MEMBER
+  // ==========================================================
+  fastify.put(
+    '/:id',
+    updateTeamMember
+  );
+
+
+  // ==========================================================
+  // ADMIN
+  // DELETE TEAM MEMBER
+  // ==========================================================
+  fastify.delete(
+    '/:id',
+    deleteTeamMember
+  );
 }
+
 
 module.exports = teamModule;

@@ -205,6 +205,7 @@ const generateIDCardPDF = async (member, idCardNumber) => {
   await browser.close();
   return pdfBuffer;
 };
+
 // GET latest member ID
 const getLatestId = async (request, reply) => {
   try {
@@ -350,7 +351,16 @@ const submitApplication = async (request, reply) => {
 const getAllMembers = async (request, reply) => {
   try {
     const { status, district, zone, membershipType, month } = request.query;
-    let query = 'SELECT * FROM members WHERE 1=1';
+    let query = `
+      SELECT
+        id, application_id, full_name, date_of_birth, father_name, guardian_name,
+        gender, nationality, door_no, street, city, district, zone,
+        state, pin_code, phone, email, aadhar_number, education,
+        qualification_details, membership_type, previous_membership,
+        status, id_card_number, approved_at, rejected_at, created_at,
+        email_verified_at, email_verified_by
+      FROM members WHERE 1=1
+    `;
     const params = [];
     let i = 1;
     if (status) { query += ` AND status = $${i++}`; params.push(status); }
@@ -503,6 +513,7 @@ const sendIdCardEmail = async (request, reply) => {
     reply.code(500).send({ error: 'Failed to send email: ' + err.message });
   }
 };
+
 // POST send admin-triggered email verification OTP
 const sendVerificationOtp = async (request, reply) => {
   try {
