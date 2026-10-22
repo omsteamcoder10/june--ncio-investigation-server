@@ -58,16 +58,31 @@ const ensureMemberVerificationSchema = async () => {
   `);
 };
 
-// ✅ Logo base64 - puppeteer render-la use agum
-const getLogoBase64 = () => {
+// ✅ SAFE LOGO LOADER: Fetches the logo from the frontend URL or local folders
+const getLogoBuffer = () => {
+  const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
+  const logoUrl = `${frontendUrl}/logo/1.png`;
+
   try {
-    const logoPath = path.join(__dirname, '../../../client/public/logo/1.png');
-    const logoBuffer = fs.readFileSync(logoPath);
-    return `data:image/png;base64,${logoBuffer.toString('base64')}`;
+    // 1. Try fetching from the frontend URL (Works in production & local dev)
+    const req = require('child_process').execSync(`curl -s ${logoUrl}`);
+    if (req && req.length > 100) {
+      return req;
+    }
   } catch (err) {
-    console.error('Logo read error:', err.message);
-    return null;
+    console.log('URL fetch failed, trying local paths...');
   }
+
+  // 2. Fallback: try backend/public/logo
+  const logoPath = path.join(process.cwd(), 'public', 'logo', '1.png');
+  if (fs.existsSync(logoPath)) return fs.readFileSync(logoPath);
+
+  // 3. Fallback: try client/public/logo
+  const fallbackPath = path.join(__dirname, '../../../client/public/logo/1.png');
+  if (fs.existsSync(fallbackPath)) return fs.readFileSync(fallbackPath);
+
+  console.error('❌ Logo read error: 1.png not found anywhere!');
+  return null;
 };
 
 const generateIDCardPDF = async (member, idCardNumber) => {
@@ -81,7 +96,9 @@ const generateIDCardPDF = async (member, idCardNumber) => {
     ? new Date(member.date_of_birth).toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' })
     : '-';
 
-  const logoBase64 = getLogoBase64();
+  const logoBuffer = getLogoBuffer();
+  const logoBase64 = logoBuffer ? `data:image/png;base64,${logoBuffer.toString('base64')}` : null;
+  
   const logoHtml = logoBase64
     ? `<img src="${logoBase64}" style="width:100%;height:100%;object-fit:cover;" />`
     : `<div style="color:${primary};font-weight:900;font-size:18px;">N</div>`;
@@ -186,15 +203,26 @@ const generateIDCardPDF = async (member, idCardNumber) => {
   </body></html>`;
 
   const browser = await puppeteer.launch({
-    headless: true,
-    args: ['--no-sandbox', '--disable-setuid-sandbox'],
+    headless: "new",
+    args: [
+      '--no-sandbox', 
+      '--disable-setuid-sandbox',
+      '--disable-dev-shm-usage'
+    ],
   });
+  
   const page = await browser.newPage();
-  await page.setViewport({ width: 260, height: 420 });
-  await page.setContent(html, { waitUntil: 'networkidle0' });
+  
+  await page.setContent(html, { waitUntil: 'networkidle0' }); 
+  await page.setViewport({ width: 260, height: 420, deviceScaleFactor: 2 });
 
   const cardElement = await page.$('.card');
   const boundingBox = await cardElement.boundingBox();
+
+  if (!boundingBox) {
+      await browser.close();
+      throw new Error("Failed to calculate card dimensions for PDF.");
+  }
 
   const pdfBuffer = await page.pdf({
     width: `${Math.ceil(boundingBox.width)}px`,
@@ -202,7 +230,13 @@ const generateIDCardPDF = async (member, idCardNumber) => {
     printBackground: true,
     margin: { top: 0, right: 0, bottom: 0, left: 0 },
   });
+  
   await browser.close();
+  
+  if (!pdfBuffer || pdfBuffer.length === 0) {
+      throw new Error("PDF generation returned an empty file.");
+  }
+
   return pdfBuffer;
 };
 
@@ -398,7 +432,6 @@ const approveMember = async (request, reply) => {
     const m = member.rows[0];
     const month = new Date().toISOString().slice(2, 7).replace('-', '');
 
-    // ✅ FIXED: Use MAX to avoid duplicate ID card numbers
     const zoneCode = m.zone?.substring(0, 2).toUpperCase() || 'Z0';
     const prefix = `TN-${zoneCode}-${month}-`;
     const maxResult = await pool.query(
@@ -451,7 +484,23 @@ const sendIdCardEmail = async (request, reply) => {
     }
 
     const pdfBuffer = await generateIDCardPDF(m, m.id_card_number);
-    const logoPath = path.join(__dirname, '../../../client/public/logo/1.png');
+    const logoBuffer = getLogoBuffer();
+
+    const attachments = [
+      {
+        filename: `NCIO_${m.application_id}_IDCard.pdf`,
+        content: pdfBuffer,
+        contentType: 'application/pdf',
+      }
+    ];
+
+    if (logoBuffer) {
+      attachments.push({
+        filename: '1.png',
+        content: logoBuffer,
+        cid: 'ncio_logo',
+      });
+    }
 
     await transporter.sendMail({
       from: FROM_EMAIL,
@@ -460,8 +509,7 @@ const sendIdCardEmail = async (request, reply) => {
       html: `
         <div style="font-family:Arial,sans-serif;max-width:500px;margin:auto;border:2px solid #1a237e;border-radius:12px;overflow:hidden;">
           <div style="background:linear-gradient(135deg,#0d1b5e,#1a237e);padding:24px;text-align:center;">
-            <img src="cid:ncio_logo" alt="NCIO Logo"
-              style="width:60px;height:60px;border-radius:50%;border:3px solid rgba(255,255,255,0.5);object-fit:cover;display:block;margin:0 auto 12px;" />
+            ${logoBuffer ? `<img src="cid:ncio_logo" alt="NCIO Logo" style="width:60px;height:60px;border-radius:50%;border:3px solid rgba(255,255,255,0.5);object-fit:cover;display:block;margin:0 auto 12px;" />` : ''}
             <h1 style="color:white;margin:0;font-size:22px;letter-spacing:2px;">NCIO</h1>
             <p style="color:rgba(255,255,255,0.7);margin:4px 0 0;font-size:12px;">OFFICIAL MEMBER</p>
           </div>
@@ -479,7 +527,9 @@ const sendIdCardEmail = async (request, reply) => {
               </tr>
               <tr style="background:#f8f9ff;">
                 <td style="padding:8px 12px;color:#888;font-size:13px;">Membership Type</td>
-                <td style="padding:8px 12px;font-weight:bold;">${m.membership_type}</td>
+                <td style="padding:8px 12px;font-weight:bold;">
+                  ${m.membership_type === 'MEMBER' ? 'DISTRICT' : m.membership_type} MEMBER
+                </td>
               </tr>
               <tr>
                 <td style="padding:8px 12px;color:#888;font-size:13px;">District</td>
@@ -493,18 +543,7 @@ const sendIdCardEmail = async (request, reply) => {
           </div>
         </div>
       `,
-      attachments: [
-        {
-          filename: `NCIO_${m.application_id}_IDCard.pdf`,
-          content: pdfBuffer,
-          contentType: 'application/pdf',
-        },
-        {
-          filename: '1.png',
-          path: logoPath,
-          cid: 'ncio_logo',
-        },
-      ],
+      attachments: attachments,
     });
 
     return { success: true, message: 'ID card emailed successfully.' };
